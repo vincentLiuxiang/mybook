@@ -185,7 +185,8 @@ suite
 ```
 
 ### result
-> 无错误中间件
+
+* 无错误中间件
 
 > appNew = test(appNew,50);
  
@@ -200,7 +201,8 @@ connectOld x 48,994 ops/sec ±4.75% (64 runs sampled)
 connectNew x 51,117 ops/sec ±1.67% (81 runs sampled)
 Fastest is connectNew,connectOld
 ```
->有错误中间件
+
+* 有错误中间件
 
 >appNew = test(appNew,0,0,50,1);
 
@@ -277,7 +279,7 @@ Requests/sec:   8232.69
 Transfer/sec:    836.13KB
 ```
 
-* connect优化后
+* connect 优化后
 
 ```
 http.createServer((req,res) => {
