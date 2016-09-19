@@ -187,7 +187,7 @@ $ node timeout_vs_immediate.js
 immediate
 timeout
 ```
-#### 关于这点的原因，笔者目前还未弄清楚。。。
+#### 关于这点的原因，笔者目前还未弄清楚。。。[见cnode评论解释](https://cnodejs.org/topic/57d68794cb6f605d360105bf)
 
 但当二者在异步i/o callback内部调用时，总是先执行setImmediate，再执行setTimeout
 
