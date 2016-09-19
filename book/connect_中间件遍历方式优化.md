@@ -74,7 +74,7 @@ app.use((err,req,res,next) => {
  +      if (layer) errIndex = layer.index;
  +    }
 ```
-### [代码diff](https://github.com/senchalabs/connect/pull/1085/files)
+### [代码diff https://github.com/senchalabs/connect/pull/1085/files](https://github.com/senchalabs/connect/pull/1085/files)
 
 ### 还是上面的例子
 ```
