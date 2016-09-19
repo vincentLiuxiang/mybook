@@ -107,7 +107,7 @@ if (!layer) {
 }
 ```
 
->性能测试脚本 1 
+### 性能测试脚本 1 
 
 ```
 var Benchmark = require('benchmark');
@@ -184,7 +184,7 @@ suite
 .run({ 'async': true });
 ```
 
-## result
+### result
 > 无错误中间件
 
 > appNew = test(appNew,50);
@@ -216,6 +216,86 @@ connectNew x 145,842 ops/sec ±3.25% (79 runs sampled)
 Fastest is connectNew
 ```
 
+
+### 性能测试脚本 2
+
+```
+var appNew = require('../../../../github/connect')();
+var appOld = require('connect')();
+var express = require('express')();
+var http = require('http');
+
+appNew = test(appNew,0,0,50,1);
+appOld = test(appOld,0,0,50,1);
+express = test(express,0,0,50,1);
+
+http.createServer((req,res) => {
+  //appNew(req,res);
+  //appOld(req,res);
+  express(req,res);
+}).listen(3002)
+```
+### result
+
+* express
+
+```
+http.createServer((req,res) => {
+  express(req,res);
+}).listen(3002)
+```
+
+```
+-> wrk -t 8 -c 100 -d 30 http://127.0.0.1:3002
+Running 30s test @ http://127.0.0.1:3002
+  8 threads and 100 connections
+  Thread Stats   Avg      Stdev     Max   +/- Stdev
+    Latency    14.77ms    2.53ms  71.22ms   83.84%
+    Req/Sec   817.15    107.04     1.29k    76.00%
+  195447 requests in 30.06s, 23.67MB read
+Requests/sec:   6502.34
+Transfer/sec:    806.44KB
+```
+
+* connect
+
+```
+http.createServer((req,res) => {
+  appOld(req,res);
+}).listen(3002)
+```
+
+```
+-> wrk -t 8 -c 100 -d 30 http://127.0.0.1:3002
+Running 30s test @ http://127.0.0.1:3002
+  8 threads and 100 connections
+  Thread Stats   Avg      Stdev     Max   +/- Stdev
+    Latency    11.95ms    5.08ms  94.55ms   91.29%
+    Req/Sec     1.04k   246.71     1.82k    74.08%
+  247739 requests in 30.09s, 24.57MB read
+Requests/sec:   8232.69
+Transfer/sec:    836.13KB
+```
+
+* connect优化后
+
+```
+http.createServer((req,res) => {
+  appNew(req,res);
+}).listen(3002)
+```
+
+```
+-> wrk -t 8 -c 100 -d 30 http://127.0.0.1:3002
+Running 30s test @ http://127.0.0.1:3002
+  8 threads and 100 connections
+  Thread Stats   Avg      Stdev     Max   +/- Stdev
+    Latency     8.53ms    2.16ms  66.62ms   93.58%
+    Req/Sec     1.42k   176.98     2.41k    84.33%
+  340279 requests in 30.06s, 33.75MB read
+Requests/sec:  11319.54
+Transfer/sec:      1.12MB
+```
 
 
 
