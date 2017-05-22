@@ -107,9 +107,14 @@
 		* 4) "3"
 * zunionstore 同上求并集
  
+### 事务
 
+### watch
 
+### 过期时间 expire
 
+* expire foo 20
+* persist key 
 
 
 

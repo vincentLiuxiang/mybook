@@ -1,12 +1,15 @@
-# Node.js Event Loop 的理解 Timers，process.nextTick()
-写node.js有一段时间了，一直在理解event loop这个概念，国内外的文章翻阅了也不少，但是对event loop能讲解清楚的还是不多。
-最后还是查阅的nodejs对event loop的官方解释才恍然大悟，如获至宝。
+# 通过源码分析（libuv）Event Loop
 
-写这篇文章的目的是将自己对该文章的理解做一个记录，官方文档链接[The Node.js Event Loop, Timers, and process.nextTick()](https://github.com/nodejs/node/blob/master/doc/topics/the-event-loop-timers-and-nexttick.md#the-nodejs-event-loop-timers-and-processnexttick)
+
+
+写node.js有一段时间了，一直在理解event loop这个概念，国内外的文章翻阅了也不少，但是对event loop能讲解清楚的还是不多。
+
+
+写这篇文章的目的是将自己对`eventloop`的理解以及`libuv`源码分析做一个记录，官方文档链接[The Node.js Event Loop, Timers, and process.nextTick()](https://github.com/nodejs/node/blob/master/doc/topics/the-event-loop-timers-and-nexttick.md#the-nodejs-event-loop-timers-and-processnexttick)
 
 * 术语约束:
-	* 文中的timer特指，setTimeout、setInterval;
-	* setImmediate不是timer;
+* 文中的timer特指，setTimeout、setInterval;
+* setImmediate不是timer;
 
 
 ### Event Loop的解释
@@ -36,7 +39,7 @@
    └───────────────────────┘
 ```
 * **timers 阶段:** 这个阶段执行setTimeout(callback) and setInterval(callback)预定的callback;
-* **I/O callbacks 阶段:** 执行除了 close事件的callbacks、被timers(定时器，setTimeout、setInterval等)设定的callbacks、setImmediate()设定的callbacks之外的callbacks;
+* **I/O callbacks 阶段:** 一般是一些系统调用，比如tcp连接失败error的，callback;
 * **idle, prepare 阶段:** 仅node内部使用;
 * **poll 阶段:** 获取新的I/O事件, 适当的条件下node将阻塞在这里;
 * **check 阶段:** 执行setImmediate() 设定的callbacks;
@@ -47,11 +50,86 @@
 node将执行该阶段的fifo queue(队列)，当队列callback执行完或者执行callbacks数量超过该阶段的上限时，
 event loop会转入下一下阶段.
 
-
 ##### `注意上面六个阶段都不包括 process.nextTick()，稍后做解释；`
 
-### poll阶段
-poll阶段是衔接整个event loop各个阶段比较重要的阶段，为了便于后续例子的理解，本文和原文的介绍顺序不一样，本文先讲这个阶段；
+
+
+### libuv 源码简单分析
+
+```c
+int uv_run(uv_loop_t* loop, uv_run_mode mode) {
+  int timeout;
+  int r;
+  int ran_pending;
+
+  r = uv__loop_alive(loop);
+  if (!r)
+    uv__update_time(loop);
+
+  while (r != 0 && loop->stop_flag == 0) {
+    // 更新当前event-loop事件戳
+    // loop->time
+    uv__update_time(loop);
+    // timer阶段，执行timer heap,
+    // timer heap, 你可以认为是根据定时器执行是时间排序的降序序链表
+    // uv__run_timers 循环遍历timer_heap, 假设每一个待处理的timer事件对象为handle 
+    // 1. 如果当前 handle->time >= loop->time, 执行handle->cb()
+    // 2. 如果当前 handle->time < loop->time, 循环break, 
+    // 为什么break? 是因为timer_heap是有序的
+    uv__run_timers(loop);
+    // 执行i/o callback;
+    ran_pending = uv__run_pending(loop);
+    // idle阶段
+    uv__run_idle(loop);
+   	// prepare阶段
+    uv__run_prepare(loop);
+
+    timeout = 0;
+    if ((mode == UV_RUN_ONCE && !ran_pending) || mode == UV_RUN_DEFAULT)
+      timeout = uv_backend_timeout(loop);
+	
+    // poll阶段, 里面其实就是epoll模型的核心，下次再写一篇epoll的文档，具体展开来讲
+    uv__io_poll(loop, timeout);
+    // check阶段
+    uv__run_check(loop);
+    // close阶段
+    uv__run_closing_handles(loop);
+
+    if (mode == UV_RUN_ONCE) {
+      /* UV_RUN_ONCE implies forward progress: at least one callback must have
+       * been invoked when it returns. uv__io_poll() can return without doing
+       * I/O (meaning: no callbacks) when its timeout expires - which means we
+       * have pending timers that satisfy the forward progress constraint.
+       *
+       * UV_RUN_NOWAIT makes no guarantees about progress so it's omitted from
+       * the check.
+       */
+      // 如果代码只是执行一次，进程就退出，进程推出前再执行一次，uv__run_timers
+      // 很好理解，因为上面第一次uv__run_timers，可能timer事件还未ready
+      uv__update_time(loop);
+      uv__run_timers(loop);
+    }
+
+    r = uv__loop_alive(loop);
+    if (mode == UV_RUN_ONCE || mode == UV_RUN_NOWAIT)
+      break;
+  }
+
+  /* The if statement lets gcc compile it to a conditional store. Avoids
+   * dirtying a cache line.
+   */
+  if (loop->stop_flag != 0)
+    loop->stop_flag = 0;
+
+  return r;
+}
+```
+
+
+
+### poll阶段——uv__io_poll
+
+poll阶段是衔接整个event loop各个阶段比较重要的阶段，为了便于后续例子的理解，本文先讲这个阶段；
 
 在node.js里，任何异步方法（除timer,close,setImmediate之外）完成时，都会将其callback加到poll queue里,并立即执行。
 
@@ -64,9 +142,9 @@ poll阶段是衔接整个event loop各个阶段比较重要的阶段，为了便
 
 * 如果poll queue不为空，event loop将同步的执行queue里的callback,直至queue为空，或执行的callback到达系统上限;
 * 如果poll queue为空，将会发生下面情况：
-	* 如果代码已经被setImmediate()设定了callback, event loop将结束poll阶段进入check阶段，并执行check阶段的queue (check阶段的queue是 setImmediate设定的)
-	* 如果代码没有设定setImmediate(callback)，event loop将阻塞在该阶段等待callbacks加入poll queue;
-	
+* 如果代码已经被setImmediate()设定了callback, event loop将结束poll阶段进入check阶段，并执行check阶段的queue (check阶段的queue是 setImmediate设定的)
+* 如果代码没有设定setImmediate(callback)，event loop将阻塞在该阶段等待callbacks加入poll queue;
+
 如果event loop进入了 poll阶段，且代码设定了timer：
 
 * 如果poll queue进入空状态时（即poll 阶段为空闲状态），event loop将检查timers,如果有1个或多个timers时间时间已经到达，event loop将按循环顺序进入 timers 阶段，并执行timer queue.
@@ -77,7 +155,7 @@ poll阶段是衔接整个event loop各个阶段比较重要的阶段，为了便
 * 注意，例子中的时间是不同机器，同一机器不同执行时间都会有差异的。
 
 ### example 1
-```
+```js
 var fs = require('fs');
 
 function someAsyncOperation (callback) {
@@ -103,7 +181,7 @@ someAsyncOperation(function () {
 ```
 结果: 先执行someAsyncOperation的callback,再执行setTimeout callback
 
-```
+```shell
 -> node eventloop.js
 setTimeout: 22ms have passed since I was scheduled
 fileReaderTime 2
@@ -115,7 +193,7 @@ fileReaderTime 2
 2. i/o callback阶段，无异步i/o完成
 3. 忽略
 4. poll阶段，阻塞在这里，当运行2ms时，fs.readFile完成，将其callback加入 poll队列，并执行callback，
-其中callback要消耗20毫秒,等callback之行完，poll处于空闲状态，由于之前设定了timer，因此检查timers,发现timer设定时间是20ms，当前时间运行超过了该值，因此，立即循环回到timer阶段执行其callback,因此，虽然setTimeout的20毫秒，但实际是22毫秒后执行。
+   其中callback要消耗20毫秒,等callback之行完，poll处于空闲状态，由于之前设定了timer，因此检查timers,发现timer设定时间是20ms，当前时间运行超过了该值，因此，立即循环回到timer阶段执行其callback,因此，虽然setTimeout的20毫秒，但实际是22毫秒后执行。
 
 ### example 2
 ```
@@ -146,7 +224,7 @@ someAsyncOperation(function () {
 ```
 结果：setTimeout callback先执行，someAsyncOperation callback后执行
 
-```
+```js
 -> node eventloop.js
 setTimeout: 7ms have passed since I was scheduled
 fileReaderTime 9
@@ -168,10 +246,10 @@ fileReaderTime 9
 
 其二者的调用顺序取决于当前event loop的上下文，如果他们在异步i／o callback之外调用，其执行先后顺序是不确定的
 
-```
+```js
 setTimeout(function timeout () {
   console.log('timeout');
-},0);
+}, 0);
 
 setImmediate(function immediate () {
   console.log('immediate');
@@ -187,7 +265,39 @@ $ node timeout_vs_immediate.js
 immediate
 timeout
 ```
-#### 关于这点的原因，笔者目前还未弄清楚。。。[见cnode评论解释](https://cnodejs.org/topic/57d68794cb6f605d360105bf)
+解释：
+
+二者执行的先后顺序是不一定的，由系统执行状态决定。具体原因，我简单引入一下libuv的c语言代码：
+
+```c
+int uv_run(uv_loop_t* loop, uv_run_mode mode) {
+  
+  ...
+
+  while (r != 0 && loop->stop_flag == 0) {
+    // 更新当前event-loop事件戳
+    // loop->time
+    uv__update_time(loop);
+    // timer阶段，执行timer heap,
+    // timer heap, 你可以认为是根据定时器执行是时间排序的降序序链表
+    // 这里涉及一个问题:
+    // 1. eventloop各个阶段的queue, 是在运行uv_run前注册(添加)进去的。当前在eventloop执行过程中，也可以往各个阶段的queue里添加cb.
+    // 2. timer_heap也是在uv_run之前就创建了
+    // 3. 比如：
+       		/*
+       			setTimeout(function timeout () {
+                  console.log('timeout');
+                },0);
+       		*/	
+    // 4. 在3的例子中，在调用setTimeout时其实是往timer_heap注册一个handle结构体，handle里包含cb, time等信息， 针对例子3，handle->time = system_current_time + 1;
+    // 5. 当系统运行到uv__update_time(loop)时, 因为cpu时间片分配的不确定性与绝对时间一定性，会造成
+    // 调用uv__update_time(loop)造成 loop->time 大于／等于／小于 handle-> time 均有可能
+    uv__run_timers(loop);
+	
+    ...
+```
+
+
 
 但当二者在异步i/o callback内部调用时，总是先执行setImmediate，再执行setTimeout
 
@@ -208,7 +318,7 @@ fs.readFile(__filename, () => {
 $ node timeout_vs_immediate.js
 immediate
 timeout
-```	
+```
 理解了event loop的各阶段顺序这个例子很好理解：
 因为fs.readFile callback执行完后，程序设定了timer 和 setImmediate，因此poll阶段不会被阻塞进而进入check阶段先执行setImmediate，后进入timer阶段执行setTimeout
 
@@ -317,25 +427,29 @@ setImmediate
 
 
 
+### 文档最后再提一下 node EventEmitter
+
+node events是同步的！
+
+```js
+var events = require('events');
+var emitter = new events.EventEmitter();
+
+emitter.on('someEvent', function(arg1, arg2) {
+	console.log('listener');
+});
+
+emitter.emit('someEvent');
+```
 
 
 
+events注册的事件, 其实是存在了一个event_queue里，伪代码分析如下：
 
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
+```js
+// 以下是伪代码
+e.on('test', cb);
+// 等价于 eventqueue['test'].push(cb)
+e.emit('test');
+// 等价于 eventqueue['test'].map(cb => cb())，这是伪代码
+```
